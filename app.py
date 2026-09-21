@@ -37,7 +37,7 @@ def load_data():
     Carga el dataset real desde data/complaints_sample.csv.
     Si no existe el archivo, genera un dataset sintético realista de 1,000 registros.
     """
-    data_path = "rows.csv"
+    data_path = "rows.parquet"
     
     # Mapeo de categorías duplicadas según el descubrimiento del notebook
     mapeo_product_duplicado = {
@@ -50,7 +50,7 @@ def load_data():
     }
 
     if os.path.exists(data_path):
-        df = pd.read_csv(data_path, low_memory=False)
+        df = pd.read_parquet(data_path)
         # Asegurar formato de fecha
         for date_col in ["Date received", "Date", "date_received"]:
             if date_col in df.columns:
