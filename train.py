@@ -1,124 +1,97 @@
 import os
-import re
-import joblib
-import pandas as pd
-import numpy as np
 
-from sklearn.model_selection import train_test_split
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.dummy import DummyClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.model_selection import train_test_split
 
-def clean_narrative(text):
-    """
-    Limpieza básica coincidente con el preprocesamiento de textos de la CFPB:
-    Remueve patrones de anonimización (ej. XXXX, XX/XX/XXXX) y caracteres especiales.
-    """
-    if not isinstance(text, str):
-        return ""
-    # Remover patrones de anonimización como XXXX o xx/xx/xxxx
-    text = re.sub(r'X{2,}', '', text)
-    text = re.sub(r'x{2,}', '', text)
-    # Remover espacios múltiples
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+from preprocessing import (
+    USECOLS,
+    add_product_unified,
+    clean_text,
+    stratified_nlp_sample,
+)
+
+NARRATIVE = "Consumer complaint narrative"
+
+
+def load_raw():
+    """Lee rows.parquet (preferido) o rows.csv, solo con las columnas del notebook."""
+    if os.path.exists("rows.parquet"):
+        df = pd.read_parquet("rows.parquet")
+        return df[[c for c in USECOLS if c in df.columns]]
+    if os.path.exists("rows.csv"):
+        return pd.read_csv("rows.csv", low_memory=False)[USECOLS]
+    raise FileNotFoundError(
+        "No se encontró 'rows.parquet' ni 'rows.csv' en la raíz del proyecto."
+    )
+
 
 def main():
-    # Asegurar existencia del directorio de destino para los modelos
     os.makedirs("models", exist_ok=True)
-    
-    data_path = "rows.csv"
-    
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(
-            f"No se encontró el archivo '{data_path}'. "
-            "Asegúrate de colocar el CSV original de la CFPB en la raíz del proyecto."
-        )
-    
-    print("📥 Cargando dataset original...")
-    df = pd.read_csv(data_path, low_memory=False)
-    
-    print(f"Dimensiones iniciales del dataset: {df.shape}")
-    
-    # 1. Limpieza de datos (Seguir lógica estricta del notebook)
-    # Conservar únicamente registros con narrativa y producto válidos
-    df_clean = df.dropna(subset=["Consumer complaint narrative", "Product"]).copy()
-    print(f"Registros con narrativa válida: {len(df_clean):,}")
 
-    # --- NUEVO: Mapeo de categorías duplicadas ---
-    print("🔄 Consolidando categorías de productos...")
-    mapeo_product_duplicado = {
-        "Credit card": "Credit card or prepaid card",
-        "Prepaid card": "Credit card or prepaid card",
-        "Payday loan": "Payday loan, title loan, or personal loan",
-        "Virtual currency": "Money transfer, virtual currency, or money service",
-        "Credit reporting": "Credit reporting, credit repair services, or other personal consumer reports",
-        "Money transfers": "Money transfer, virtual currency, or money service"
-    }
-    df_clean["Product"] = df_clean["Product"].replace(mapeo_product_duplicado)
-    # ----------------------------------------------
-    
-    # 2. Aplicar limpieza de texto sobre la narrativa
-    print("🧹 Aplicando limpieza de texto y remoción de tokens anonimizados...")
-    df_clean["narrative_clean"] = df_clean["Consumer complaint narrative"].apply(clean_narrative)
-    
-    # Filtrar textos que hayan quedado vacíos tras la limpieza
-    df_clean = df_clean[df_clean["narrative_clean"].str.len() > 10]
-    
-    X = df_clean["narrative_clean"]
-    y = df_clean["Product"]
-    
-    # 3. Divisón de Train / Test
-    print("✂️ Dividiendo datos en entrenamiento y prueba (80/20)...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.20, random_state=42, stratify=y
+    print("📥 Cargando dataset...")
+    df = load_raw()
+    print(f"Dimensiones iniciales: {df.shape}")
+
+    # Notebook celdas 15-17: unificar Product y agrupar el resto en 'Other'
+    df = add_product_unified(df)
+
+    # Notebook celdas 23-24: solo filas con narrativa + muestreo estratificado
+    nlp_df = df[df[NARRATIVE].notna()].copy()
+    print(f"Filas con narrativa: {len(nlp_df):,} de {len(df):,}")
+    nlp_df = stratified_nlp_sample(nlp_df)
+    print(f"Filas para NLP tras muestreo: {len(nlp_df):,}")
+
+    # Notebook celda 45 filtra `!= 'Otros'`, pero esa etiqueta no existe (la clase
+    # se llama 'Other'), así que en el notebook el filtro no hace nada y 'Other'
+    # SÍ participa en el modelo. Aquí se replica eso: no se filtra nada.
+    nlp_model = nlp_df.copy()
+    nlp_model["text_clean"] = nlp_model[NARRATIVE].map(clean_text)
+    print(nlp_model["Product_unified"].value_counts())
+
+    # Notebook celda 48: TF-IDF ajustado sobre todo el texto, luego split 80/20
+    tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1, 2), min_df=5)
+    X = tfidf.fit_transform(nlp_model["text_clean"])
+    y = nlp_model["Product_unified"]
+
+    idx = np.arange(len(nlp_model))
+    idx_train, idx_test = train_test_split(
+        idx, test_size=0.2, random_state=42, stratify=y
     )
-    
-    # 4. Vectorización TF-IDF
-    print("🔠 Transformando textos mediante TfidfVectorizer...")
-    vectorizer = TfidfVectorizer(
-        max_features=10000,
-        stop_words="english",
-        ngram_range=(1, 2),
-        sublinear_tf=True
-    )
-    
-    X_train_tfidf = vectorizer.fit_transform(X_train)
-    X_test_tfidf = vectorizer.transform(X_test)
-    
-    # 5. Entrenamiento del Modelo (Regresión Logística según notebook)
+    X_train, X_test = X[idx_train], X[idx_test]
+    y_train, y_test = y.iloc[idx_train], y.iloc[idx_test]
+
     print("🤖 Entrenando LogisticRegression...")
-    model = LogisticRegression(
-        max_iter=1000,
-        random_state=42,
-        n_jobs=-1,
-        class_weight="balanced"
-    )
-    model.fit(X_train_tfidf, y_train)
-    
-    # 6. Evaluación de Métricas
-    print("📊 Evaluando modelo...")
-    y_pred = model.predict(X_test_tfidf)
-    
+    log_reg = LogisticRegression(max_iter=2000, class_weight="balanced", n_jobs=-1)
+    log_reg.fit(X_train, y_train)
+    y_pred = log_reg.predict(X_test)
+
     acc = accuracy_score(y_test, y_pred)
-    f1_w = f1_score(y_test, y_pred, average="weighted")
-    
-    print("\n" + "="*50)
-    print(f"Accuracy:         {acc:.4f}")
-    print(f"F1-Score Weighted: {f1_w:.4f}")
-    print("="*50 + "\n")
-    print("Reporte de Clasificación Detallado:")
+    f1_macro = f1_score(y_test, y_pred, average="macro")
+
+    # Notebook celda 52: baseline para comparar
+    dummy = DummyClassifier(strategy="most_frequent").fit(X_train, y_train)
+    y_dummy = dummy.predict(X_test)
+
+    print("\n" + "=" * 50)
+    print(f"Logistic Regression - Accuracy: {acc:.4f} | F1 macro: {f1_macro:.4f}")
+    print(
+        f"Baseline            - Accuracy: {accuracy_score(y_test, y_dummy):.4f} | "
+        f"F1 macro: {f1_score(y_test, y_dummy, average='macro'):.4f}"
+    )
+    print("=" * 50 + "\n")
     print(classification_report(y_test, y_pred))
-    
-    # 7. Guardar artefactos en la ruta consumida por Streamlit (models/)
-    model_path = "models/model.joblib"
-    tfidf_path = "models/tfidf.joblib"
-    
-    joblib.dump(model, model_path)
-    joblib.dump(vectorizer, tfidf_path)
-    
-    print(f"✅ Modelo guardado exitosamente en: {model_path}")
-    print(f"✅ Vectorizador guardado exitosamente en: {tfidf_path}")
+
+    joblib.dump(log_reg, "models/model.joblib")
+    joblib.dump(tfidf, "models/tfidf.joblib")
+    print("✅ Modelo guardado en models/model.joblib")
+    print("✅ Vectorizador guardado en models/tfidf.joblib")
+
 
 if __name__ == "__main__":
     main()

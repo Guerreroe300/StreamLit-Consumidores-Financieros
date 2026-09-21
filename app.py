@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import joblib
 import os
-import re
+
+from preprocessing import USECOLS, add_product_unified, clean_text
 
 # ---------------------------------------------------------
 # Configuración de la Página
@@ -17,114 +17,23 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Funciones de Soporte
-# ---------------------------------------------------------
-def clean_narrative(text):
-    """Limpia el texto del usuario aplicando las mismas reglas del modelo."""
-    if not isinstance(text, str):
-        return ""
-    text = re.sub(r'X{2,}', '', text)
-    text = re.sub(r'x{2,}', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-# ---------------------------------------------------------
 # Carga y Generación de Datos
 # ---------------------------------------------------------
 @st.cache_data
 def load_data():
     """
-    Carga el dataset real desde data/complaints_sample.csv.
-    Si no existe el archivo, genera un dataset sintético realista de 1,000 registros.
+    Carga rows.parquet y aplica la misma preparación del notebook:
+      - solo las 10 columnas de DATA_DICT (celda 8)
+      - 'Date received' a datetime (celda 9)
+      - Product_unified: unificación de etiquetas + top 8 y "Other" (celdas 15 y 17)
+      - has_narrative (celda 23)
     """
-    data_path = "rows.parquet"
-    
-    # Mapeo de categorías duplicadas según el descubrimiento del notebook
-    mapeo_product_duplicado = {
-        "Credit card": "Credit card or prepaid card",
-        "Prepaid card": "Credit card or prepaid card",
-        "Payday loan": "Payday loan, title loan, or personal loan",
-        "Virtual currency": "Money transfer, virtual currency, or money service",
-        "Credit reporting": "Credit reporting, credit repair services, or other personal consumer reports",
-        "Money transfers": "Money transfer, virtual currency, or money service"
-    }
-
-    if os.path.exists(data_path):
-        df = pd.read_parquet(data_path)
-        # Asegurar formato de fecha
-        for date_col in ["Date received", "Date", "date_received"]:
-            if date_col in df.columns:
-                df["Date received"] = pd.to_datetime(df[date_col], errors="coerce")
-                break
-        
-        # --- NUEVO: Aplicar mapeo al dataset real ---
-        if "Product" in df.columns:
-            df["Product"] = df["Product"].replace(mapeo_product_duplicado)
-            
-        return df
-    else:
-        # DATASET SINTÉTICO DE RESPALDO (1,000 quejas simuladas)
-        np.random.seed(42)
-        n_samples = 1000
-        
-        products = [
-            "Credit reporting, credit repair services, or other personal consumer reports",
-            "Debt collection",
-            "Mortgage",
-            "Credit card or prepaid card",
-            "Checking or savings account",
-            "Student loan",
-            "Vehicle loan or lease"
-        ]
-        prod_p = [0.42, 0.20, 0.15, 0.12, 0.06, 0.03, 0.02]
-        
-        companies = [
-            "EQUIFAX INC.", "EXPERIAN INFORMATION SOLUTIONS INC.", "TRANSUNION INTERMEDIATE HOLDINGS",
-            "BANK OF AMERICA, NATIONAL ASSOCIATION", "WELLS FARGO & COMPANY", "JPMORGAN CHASE & CO.",
-            "CITIBANK, N.A.", "CAPITAL ONE FINANCIAL CORPORATION", "NAVIENT CORPORATION", "SYNCHRONY FINANCIAL"
-        ]
-        comp_p = [0.22, 0.20, 0.18, 0.10, 0.08, 0.07, 0.06, 0.04, 0.03, 0.02]
-        
-        states = ["CA", "FL", "TX", "NY", "GA", "IL", "PA", "OH", "NC", "MI", "VA", "AZ", "NJ", "TN"]
-        
-        issues = [
-            "Incorrect information on your report",
-            "Attempts to collect debt not owed",
-            "Trouble during payment process",
-            "Managing an account",
-            "Problem with a credit reporting company's investigation",
-            "Improper use of your report",
-            "Fees or interest charged improperly"
-        ]
-        
-        responses = [
-            "Closed with explanation",
-            "Closed with non-monetary relief",
-            "Closed with monetary relief",
-            "Untimely response",
-            "In progress"
-        ]
-        
-        dates = pd.date_range(start="2021-01-01", end="2023-12-31", periods=n_samples)
-        
-        df_mock = pd.DataFrame({
-            "Date received": np.random.choice(dates, size=n_samples),
-            "Product": np.random.choice(products, p=prod_p, size=n_samples),
-            "Issue": np.random.choice(issues, size=n_samples),
-            "Company": np.random.choice(companies, p=comp_p, size=n_samples),
-            "State": np.random.choice(states, size=n_samples),
-            "Timely response?": np.random.choice(["Yes", "No"], p=[0.96, 0.04], size=n_samples),
-            "Company response to consumer": np.random.choice(responses, p=[0.74, 0.15, 0.07, 0.02, 0.02], size=n_samples),
-            "Consumer complaint narrative": [
-                "There are incorrect transactions reported on my account that need immediate correction."
-            ] * n_samples
-        })
-        
-        # Aplicar mapeo también al sintético por seguridad
-        if "Product" in df_mock.columns:
-            df_mock["Product"] = df_mock["Product"].replace(mapeo_product_duplicado)
-            
-        return df_mock
+    df = pd.read_parquet("rows.parquet")
+    df = df[[c for c in USECOLS if c in df.columns]]
+    df["Date received"] = pd.to_datetime(df["Date received"], errors="coerce")
+    df = add_product_unified(df)
+    df["has_narrative"] = df["Consumer complaint narrative"].notna()
+    return df
 
 @st.cache_resource
 def load_ml_artifacts():
@@ -134,6 +43,10 @@ def load_ml_artifacts():
     model = joblib.load(model_path) if os.path.exists(model_path) else None
     vectorizer = joblib.load(vectorizer_path) if os.path.exists(vectorizer_path) else None
     return model, vectorizer
+
+if not os.path.exists("rows.parquet"):
+    st.error("No se encontró `rows.parquet` en la raíz del proyecto.")
+    st.stop()
 
 df_raw = load_data()
 model, vectorizer = load_ml_artifacts()
@@ -156,27 +69,32 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🔍 Filtros Exploratorios")
 
 # Filtro por Producto
-all_products = list(df_raw["Product"].dropna().unique()) if "Product" in df_raw.columns else []
+all_products = list(df_raw["Product_unified"].dropna().unique())
 selected_products = st.sidebar.multiselect("Filtrar por Producto:", options=all_products, default=all_products)
 
 # Filtro por Estado
-all_states = list(df_raw["State"].dropna().unique()) if "State" in df_raw.columns else []
-selected_states = st.sidebar.multiselect("Filtrar por Estado (EE.UU.):", options=all_states, default=all_states[:5] if len(all_states) > 5 else all_states)
+all_states = sorted(df_raw["State"].dropna().unique())
+selected_states = st.sidebar.multiselect(
+    "Filtrar por Estado (EE.UU.):",
+    options=all_states,
+    default=[],
+    help="Vacío = todos los estados.",
+)
 
 # Aplicar filtros
 df_filtered = df_raw.copy()
-if selected_products and "Product" in df_filtered.columns:
-    df_filtered = df_filtered[df_filtered["Product"].isin(selected_products)]
-if selected_states and "State" in df_filtered.columns:
+if selected_products:
+    df_filtered = df_filtered[df_filtered["Product_unified"].isin(selected_products)]
+if selected_states:
     df_filtered = df_filtered[df_filtered["State"].isin(selected_states)]
 
 # ---------------------------------------------------------
 # Interfaz Principal
 # ---------------------------------------------------------
 st.title("🏦 Dashboard de Quejas Financieras (CFPB)")
-st.caption("Plataforma interactiva de análisis exploratorio, clasificación NLP en tiempo real y clustering.")
+st.caption("Plataforma interactiva de análisis exploratorio y clasificación NLP en tiempo real.")
 
-tab1, tab2, tab3 = st.tabs(["📊 Dashboard / EDA", "🔮 Clasificador NLP", "🔍 Clustering y Subtemas"])
+tab1, tab2 = st.tabs(["📊 Dashboard / EDA", "🔮 Clasificador NLP"])
 
 # =========================================================
 # PESTAÑA 1: DASHBOARD / EDA AMPLIADO
@@ -195,7 +113,7 @@ with tab1:
             st.metric("Total de Quejas", f"{len(df_filtered):,}")
             
         with kpi2:
-            top_prod = df_filtered["Product"].mode()[0] if "Product" in df_filtered.columns and not df_filtered.empty else "N/A"
+            top_prod = df_filtered["Product_unified"].mode()[0]
             # Acortar nombre largo si es necesario
             short_prod = (top_prod[:28] + "...") if len(top_prod) > 30 else top_prod
             st.metric("Producto Más Reportado", short_prod)
@@ -206,11 +124,8 @@ with tab1:
             st.metric("Compañía con Más Quejas", short_comp)
             
         with kpi4:
-            if "Timely response?" in df_filtered.columns:
-                pct_timely = (df_filtered["Timely response?"].value_counts(normalize=True).get("Yes", 0)) * 100
-                st.metric("Respuesta a Tiempo", f"{pct_timely:.1f}%")
-            else:
-                st.metric("Respuesta a Tiempo", "N/A")
+            pct_narr = df_filtered["has_narrative"].mean() * 100
+            st.metric("Quejas con Narrativa", f"{pct_narr:.1f}%")
 
         st.markdown("---")
 
@@ -219,20 +134,19 @@ with tab1:
 
         with col_g1:
             st.subheader("1. Quejas por Categoría de Producto")
-            if "Product" in df_filtered.columns:
-                prod_counts = df_filtered["Product"].value_counts().reset_index()
-                prod_counts.columns = ["Producto", "Cantidad"]
-                fig_prod = px.bar(
-                    prod_counts,
-                    x="Cantidad",
-                    y="Producto",
-                    orientation="h",
-                    color="Cantidad",
-                    color_continuous_scale="Blues",
-                    title="Volumen Total por Producto"
-                )
-                fig_prod.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False, height=400)
-                st.plotly_chart(fig_prod, use_container_width=True)
+            prod_counts = df_filtered["Product_unified"].value_counts().reset_index()
+            prod_counts.columns = ["Producto", "Cantidad"]
+            fig_prod = px.bar(
+                prod_counts,
+                x="Cantidad",
+                y="Producto",
+                orientation="h",
+                color="Cantidad",
+                color_continuous_scale="Blues",
+                title="Volumen Total por Producto"
+            )
+            fig_prod.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False, height=400)
+            st.plotly_chart(fig_prod, use_container_width=True)
 
         with col_g2:
             st.subheader("2. Top 10 Compañías Más Reportadas")
@@ -274,19 +188,23 @@ with tab1:
                 st.plotly_chart(fig_issue, use_container_width=True)
 
         with col_g4:
-            st.subheader("4. Tipo de Respuesta de las Compañías")
-            if "Company response to consumer" in df_filtered.columns:
-                resp_counts = df_filtered["Company response to consumer"].value_counts().reset_index()
-                resp_counts.columns = ["Respuesta", "Cantidad"]
-                fig_resp = px.pie(
-                    resp_counts,
-                    values="Cantidad",
-                    names="Respuesta",
-                    hole=0.4,
-                    title="Distribución de Respuestas Entregadas al Consumidor"
-                )
-                fig_resp.update_layout(height=400)
-                st.plotly_chart(fig_resp, use_container_width=True)
+            st.subheader("4. % de Quejas con Narrativa por Producto")
+            narr_by_prod = (
+                df_filtered.groupby("Product_unified")["has_narrative"].mean()
+                .mul(100).sort_values().reset_index()
+            )
+            narr_by_prod.columns = ["Producto", "% con narrativa"]
+            fig_narr = px.bar(
+                narr_by_prod,
+                x="% con narrativa",
+                y="Producto",
+                orientation="h",
+                color="% con narrativa",
+                color_continuous_scale="Purples",
+                title="Porcentaje de Quejas que Incluyen Narrativa"
+            )
+            fig_narr.update_layout(showlegend=False, height=400)
+            st.plotly_chart(fig_narr, use_container_width=True)
 
         st.markdown("---")
 
@@ -358,86 +276,27 @@ with tab2:
             st.error("Por favor, ingresa un texto para analizar.")
         else:
             if model is None or vectorizer is None:
-                st.warning("⚠️ No se encontraron los modelos pre-entrenados en `models/`. Mostrando simulación de inferencia:")
-                
-                clases_mock = [
-                    "Credit reporting, credit repair services, or other personal consumer reports",
-                    "Debt collection",
-                    "Mortgage",
-                    "Credit card or prepaid card",
-                    "Checking or savings account"
-                ]
-                pred_mock = np.random.choice(clases_mock)
-                probs_mock = np.random.dirichlet(np.ones(len(clases_mock)))
-                
-                st.success(f"### Categoría Predicha (Simulación): **{pred_mock}**")
-                
-                df_prob = pd.DataFrame({
-                    "Categoría": clases_mock,
-                    "Probabilidad": probs_mock
-                }).sort_values("Probabilidad", ascending=True)
-                
-                fig_prob = px.bar(df_prob, x="Probabilidad", y="Categoría", orientation="h", title="Probabilidades Estimadas")
-                st.plotly_chart(fig_prob, use_container_width=True)
+                st.error("No se encontraron los modelos en `models/`. Ejecuta `python train.py` primero.")
             else:
-                # --- NUEVO: Limpiar el texto ingresado por el usuario ---
-                clean_text = clean_narrative(user_narrative)
-                
-                # Transformar el texto limpio en lugar del texto crudo
-                X_tfidf = vectorizer.transform([clean_text])
+                # Misma limpieza que el notebook (clean_text) antes de vectorizar
+                X_tfidf = vectorizer.transform([clean_text(user_narrative)])
                 prediction = model.predict(X_tfidf)[0]
                 
                 st.success(f"### Categoría Predicha: **{prediction}**")
                 
-                if hasattr(model, "predict_proba"):
-                    probabilities = model.predict_proba(X_tfidf)[0]
-                    classes = model.classes_
-                    
-                    df_prob = pd.DataFrame({
-                        "Categoría": classes,
-                        "Probabilidad": probabilities
-                    }).sort_values("Probabilidad", ascending=True)
-                    
-                    fig_prob = px.bar(
-                        df_prob, 
-                        x="Probabilidad", 
-                        y="Categoría", 
-                        orientation="h",
-                        color="Probabilidad",
-                        color_continuous_scale="Blues",
-                        title="Distribución de Probabilidades por Categoría"
-                    )
-                    st.plotly_chart(fig_prob, use_container_width=True)
-
-# =========================================================
-# PESTAÑA 3: CLUSTERING / SUBTEMAS
-# =========================================================
-with tab3:
-    st.header("Análisis de Subtemas y Agrupamiento (Clustering)")
-    st.markdown("Agrupamiento no supervisado de las narrativas para descubrir patrones y problemáticas recurrentes.")
-    
-    col_c1, col_c2 = st.columns(2)
-    
-    with col_c1:
-        st.subheader("Clusters de Temas Identificados")
-        cluster_info = pd.DataFrame({
-            "Cluster": ["Cluster 0", "Cluster 1", "Cluster 2", "Cluster 3"],
-            "Tema Principal": ["Cargos No Autorizados", "Disputas en Buró de Crédito", "Pagos Hipotecarios / Escrow", "Acoso por Cobranza de Deuda"],
-            "Palabras Clave": ["card, charge, fee, bank, account", "report, credit, dispute, bureau, equifax", "mortgage, loan, escrow, payment, interest", "debt, call, collection, phone, owe"]
-        })
-        st.dataframe(cluster_info, use_container_width=True, hide_index=True)
-
-    with col_c2:
-        st.subheader("Distribución Porcentual de Clusters")
-        df_cluster_dist = pd.DataFrame({
-            "Cluster": ["Cluster 0", "Cluster 1", "Cluster 2", "Cluster 3"],
-            "Porcentaje": [32, 38, 18, 12]
-        })
-        fig_donut = px.pie(
-            df_cluster_dist, 
-            values="Porcentaje", 
-            names="Cluster", 
-            hole=0.4,
-            title="Proporción de Narrativas por Grupo"
-        )
-        st.plotly_chart(fig_donut, use_container_width=True)
+                probabilities = model.predict_proba(X_tfidf)[0]
+                df_prob = pd.DataFrame({
+                    "Categoría": model.classes_,
+                    "Probabilidad": probabilities
+                }).sort_values("Probabilidad", ascending=True)
+                
+                fig_prob = px.bar(
+                    df_prob, 
+                    x="Probabilidad", 
+                    y="Categoría", 
+                    orientation="h",
+                    color="Probabilidad",
+                    color_continuous_scale="Blues",
+                    title="Distribución de Probabilidades por Categoría"
+                )
+                st.plotly_chart(fig_prob, use_container_width=True)
