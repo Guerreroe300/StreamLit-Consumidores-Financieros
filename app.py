@@ -4,6 +4,7 @@ import plotly.express as px
 import joblib
 import os
 
+import numpy as np
 from preprocessing import USECOLS, add_product_unified, clean_text
 
 # ---------------------------------------------------------
@@ -42,6 +43,21 @@ def load_ml_artifacts():
     model = joblib.load(model_path) if os.path.exists(model_path) else None
     vectorizer = joblib.load(vectorizer_path) if os.path.exists(vectorizer_path) else None
     return model, vectorizer
+
+def top_terms_per_class(model, vectorizer, n=8):
+    """
+    Notebook celda 56: términos con mayor coeficiente para cada clase.
+    Se obtienen directamente de los artefactos guardados (model.coef_ y el
+    vocabulario del TF-IDF), sin reentrenar nada.
+    """
+    feature_names = vectorizer.get_feature_names_out()
+    term_rows = []
+    for idx, label in enumerate(model.classes_):
+        coefs = model.coef_[idx]
+        top_idx = np.argsort(coefs)[-n:][::-1]
+        for rank, ti in enumerate(top_idx, 1):
+            term_rows.append({"Product": label, "rank": rank, "term": feature_names[ti], "coef": coefs[ti]})
+    return pd.DataFrame(term_rows)
 
 if not os.path.exists("rows.parquet"):
     st.error("No se encontró `rows.parquet` en la raíz del proyecto.")
@@ -93,7 +109,7 @@ if selected_states:
 st.title("Dashboard de Quejas Financieras (CFPB)")
 st.caption("Plataforma interactiva de análisis exploratorio y clasificación NLP en tiempo real.")
 
-tab1, tab2 = st.tabs(["Dashboard / EDA", "Clasificador NLP"])
+tab1, tab2, tab3 = st.tabs(["Dashboard / EDA", "Clasificador NLP", "Términos Clave"])
 
 # =========================================================
 # PESTAÑA 1: DASHBOARD / EDA AMPLIADO
@@ -299,3 +315,44 @@ with tab2:
                     title="Distribución de Probabilidades por Categoría"
                 )
                 st.plotly_chart(fig_prob, use_container_width=True)
+
+
+# =========================================================
+# PESTAÑA 3: TÉRMINOS MÁS IMPORTANTES POR CLASE
+# =========================================================
+with tab3:
+    st.header("Términos Más Importantes por Categoría")
+    st.markdown(
+        "Términos con mayor coeficiente en la Regresión Logística para cada categoría: "
+        "mientras más alto el coeficiente, más empuja al modelo a predecir esa categoría."
+    )
+
+    if model is None or vectorizer is None:
+        st.error("No se encontraron los modelos en `models/`. Ejecuta `python train.py` primero.")
+    else:
+        terms = top_terms_per_class(model, vectorizer, n=8)
+
+        categoria = st.selectbox("Categoría:", list(model.classes_), key="terms_categoria")
+        top = terms[terms["Product"] == categoria]
+
+        fig_terms = px.bar(
+            top,
+            x="coef",
+            y="term",
+            orientation="h",
+            color="coef",
+            color_continuous_scale="Greens",
+            title=f"Top 8 términos: {categoria}",
+            labels={"coef": "Coeficiente", "term": "Término"},
+        )
+        fig_terms.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False, height=400)
+        st.plotly_chart(fig_terms, use_container_width=True)
+
+        with st.expander("Ver resumen de todas las categorías"):
+            resumen = (
+                terms.groupby("Product", sort=False)["term"]
+                .apply(lambda t: ", ".join(t))
+                .reset_index()
+                .rename(columns={"Product": "Categoría", "term": "Términos principales"})
+            )
+            st.dataframe(resumen, use_container_width=True, hide_index=True)
