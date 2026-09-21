@@ -11,7 +11,6 @@ from preprocessing import USECOLS, add_product_unified, clean_text
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="CFPB Financial Complaint Analytics",
-    page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -54,10 +53,10 @@ model, vectorizer = load_ml_artifacts()
 # ---------------------------------------------------------
 # Barra Lateral (Sidebar) & Filtros
 # ---------------------------------------------------------
-st.sidebar.title("🏦 CFPB Analytics")
+st.sidebar.title("CFPB Analytics")
 st.sidebar.markdown("---")
 
-st.sidebar.subheader("👥 Equipo de Desarrollo")
+st.sidebar.subheader("Equipo de Desarrollo")
 st.sidebar.markdown("""
 - **Carlos Flores**
 - **Mauro Galindo**
@@ -66,7 +65,7 @@ st.sidebar.markdown("""
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔍 Filtros Exploratorios")
+st.sidebar.subheader("Filtros Exploratorios")
 
 # Filtro por Producto
 all_products = list(df_raw["Product_unified"].dropna().unique())
@@ -91,10 +90,10 @@ if selected_states:
 # ---------------------------------------------------------
 # Interfaz Principal
 # ---------------------------------------------------------
-st.title("🏦 Dashboard de Quejas Financieras (CFPB)")
+st.title("Dashboard de Quejas Financieras (CFPB)")
 st.caption("Plataforma interactiva de análisis exploratorio y clasificación NLP en tiempo real.")
 
-tab1, tab2 = st.tabs(["📊 Dashboard / EDA", "🔮 Clasificador NLP"])
+tab1, tab2 = st.tabs(["Dashboard / EDA", "Clasificador NLP"])
 
 # =========================================================
 # PESTAÑA 1: DASHBOARD / EDA AMPLIADO
@@ -259,7 +258,7 @@ with tab2:
         "Ejemplo 4: Reporte de Crédito": "Equifax is reporting a 90-day late payment on my credit profile for an account that was closed two years ago in good standing. I sent dispute letters with proof but no changes were made."
     }
     
-    opcion_ejemplo = st.selectbox("📌 Cargar un ejemplo rápido:", list(ejemplos.keys()))
+    opcion_ejemplo = st.selectbox("Cargar un ejemplo rápido:", list(ejemplos.keys()))
     texto_defecto = ejemplos[opcion_ejemplo] if opcion_ejemplo != "Seleccionar un ejemplo..." else ""
     
     user_narrative = st.text_area(
@@ -269,7 +268,7 @@ with tab2:
         placeholder="Escribe o pega aquí el texto de la queja..."
     )
     
-    btn_predict = st.button("⚡ Clasificar Queja", type="primary")
+    btn_predict = st.button("Clasificar Queja", type="primary")
     
     if btn_predict:
         if not user_narrative.strip():
